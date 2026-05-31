@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Classical Art Intermission</title>
+    <link rel="stylesheet" href="/style.css">
+    <style>
+        /* Sleek, minimalist museum plaque overlay */
+        .art-plaque {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: linear-gradient(to top, rgba(0, 0, 0, 0.85) 70%, rgba(0, 0, 0, 0));
+            padding: 40px 20px 20px 20px;
+            border-bottom-left-radius: 8px;
+            border-bottom-right-radius: 8px;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: #ffffff;
+            opacity: 0;
+            transition: opacity 1s ease-in-out;
+        }
+
+        .art-title {
+            font-size: 1.2rem;
+            font-weight: 500;
+            margin-bottom: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .art-artist {
+            font-size: 0.95rem;
+            color: #d4af37; /* Matte Gold accent color */
+            font-weight: 400;
+            letter-spacing: 0.5px;
+        }
+    </style>
+</head>
+<body>
+
+	<div id="poster-container">
+	    <div id="layer1" class="poster-layer active"></div>
+	    <div id="layer2" class="poster-layer"></div>
+	
+	    <div id="plaque" style="transition: opacity 0.4s ease-in-out;opacity:1">
+	        <h1 id="title-field">Loading...</h1>
+	        <h2 id="artist-field">Please Wait...</h2>
+	    </div>
+	</div>
+
+	<script>
+	    const BACKEND_URL = window.location.origin;
+	    const ROTATE_INTERVAL = 20000;
+	    let currentLayerIndex = 0;
+	
+	    document.addEventListener('DOMContentLoaded', () => {
+	        const plaque = document.getElementById('plaque');
+	        const titleField = document.getElementById('title-field');
+	        const artistField = document.getElementById('artist-field');
+	
+	        // Target your two smooth blending layers
+	        const layers = [
+	            document.getElementById('layer1'),
+	            document.getElementById('layer2')
+	        ];
+	
+	        async function loadNextArtwork() {
+	            try {
+	                // 1. Fetch text metadata from your backend
+	                const response = await fetch(`${BACKEND_URL}/api/art?cb=${Date.now()}`);
+	                const data = await response.json(); // This will succeed once server.js uses res.json()
+	
+	                if (data.imageUrl) {
+	                    const activeLayer = layers[currentLayerIndex];
+	                    currentLayerIndex = (currentLayerIndex + 1) % 2;
+	                    const nextLayer = layers[currentLayerIndex];
+	
+	                    if (!activeLayer || !nextLayer) return;
+	
+	                    // 2. Preload the raw artwork asset in memory to protect against loading flashes
+	                    const imgPreloader = new Image();
+	                    imgPreloader.src = data.imageUrl;
+	
+	                    imgPreloader.onload = () => {
+	                        // Drop text details behind a quick fade out
+	                        plaque.style.opacity = 0;
+	
+	                        setTimeout(() => {
+	                            // Assign preloaded asset to the hidden background layer
+	                            nextLayer.style.backgroundImage = `url('${data.imageUrl}')`;
+	                            
+	                            // Trigger CSS cross-fade step
+	                            nextLayer.classList.add('active');
+	                            activeLayer.classList.remove('active');
+	
+	                            // Update the card text
+	                            titleField.textContent = data.title;
+	                            artistField.textContent = data.artist;
+	
+	                            // Bring the info card text back into focus
+	                            plaque.style.opacity = 1;
+	                        }, 400); // 400ms matching a smooth fade transition timing gap
+	                    };
+	                }
+	            } catch (error) {
+	                console.error("Error updating artwork layout:", error);
+	            }
+	        }
+	
+	        // Fire up the loop
+	        loadNextArtwork();
+	        setInterval(loadNextArtwork, ROTATE_INTERVAL);
+	    });
+	</script>
+</body>
+</html>

@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jellyfin Theater Poster - Cloud Persistence</title>
+    <link rel="stylesheet" href="/style.css">
+    <style>
+        .poster-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background-size: contain; background-repeat: no-repeat; background-position: center center;
+            opacity: 0; transition: opacity 1.5s ease-in-out; z-index: 1;
+        }
+        .poster-layer.active { opacity: 1 !important; z-index: 2; }
+        .overlay { z-index: 10; position: absolute; }
+
+        #login-screen {
+            position: fixed;
+            top: 0; left: 0; width: 100vw; height: 100vh;
+            background: #101014; color: #fff;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            z-index: 100; font-family: sans-serif;
+        }
+        .login-card { display: flex; flex-direction: column; gap: 15px; width: 80%; max-width: 340px; }
+        .login-card h2 { color: #00a4dc; margin-bottom: 5px; text-align: center; font-weight: 600;}
+        .login-card input {
+            padding: 12px; background: #1c1c24; border: 1px solid #2c2c35; color: #fff; border-radius: 6px; font-size: 16px;
+        }
+        .login-card button {
+            padding: 14px; background: #00a4dc; border: none; color: white; font-weight: bold; border-radius: 6px; cursor: pointer; font-size: 16px;
+        }
+        #login-error { color: #ff4a4a; font-size: 14px; text-align: center; min-height: 20px; }
+    </style>
+</head>
+<body>
+
+    <div id="login-screen" style="display: none;">
+        <div class="login-card">
+            <h2>Server-Side Setup</h2>
+            <div id="login-error"></div>
+            <input type="text" id="prof-id" placeholder="Display Profile ID" value="default">
+            <input type="url" id="srv-url" placeholder="https://jellyfin.yourdomain.com">
+            <input type="text" id="usr-name" placeholder="Username">
+            <input type="password" id="usr-pass" placeholder="Password">
+            <button onclick="commitServerSideConfig()">Save Settings to Server</button>
+        </div>
+    </div>
+
+    <div id="poster-container" style="display: none;">
+        <div id="layer1" class="poster-layer active"></div>
+        <div id="layer2" class="poster-layer"></div>
+
+        <div class="overlay" id="overlay-menu">
+            <span class="watching-label" id="status-heading">Active Viewers</span>
+            <div id="users-list"></div>
+        </div>
+    </div>
+
+    <script>
+        const BACKEND_URL = window.location.origin;
+        const urlParams = new URLSearchParams(window.location.search);
+        const DISPLAY_ID = urlParams.get('displayId') || 'default';
+
+        const loginScreen = document.getElementById('login-screen');
+        const posterContainer = document.getElementById('poster-container');
+        const overlayMenu = document.getElementById('overlay-menu');
+        const statusHeading = document.getElementById('status-heading');
+        const usersList = document.getElementById('users-list');
+        const layers = [document.getElementById('layer1'), document.getElementById('layer2')];
+        
+        let currentLayerIndex = 0;
+        let activeSessionRotationIndex = 0; 
+        let currentPosterId = null;
+        let isIdle = false;
+        
+        // Runtime Dynamic Intervals Engine Tracks
+        let pollIntervalToken = null;
+        let idleIntervalToken = null;
+        let pausedTimeTracker = 0;
+        
+        // Dynamic Timing Defaults (Overridden instantly by config.json properties)
+        let timings = { poll: 5000, paused: 20000, idle: 20000 };
+
+        async function commitServerSideConfig() {
+            const displayId = document.getElementById('prof-id').value.trim() || 'default';
+            const serverUrl = document.getElementById('srv-url').value.trim().replace(/\/$/, "");
+            const username = document.getElementById('usr-name').value.trim();
+            const password = document.getElementById('usr-pass').value;
+            const errorField = document.getElementById('login-error');
+
+            try {
+                errorField.textContent = "Verifying configuration variables...";
+                const response = await fetch(`${BACKEND_URL}/api/auth/save-config`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ displayId, serverUrl, username, password })
+                });
+
+                if (!response.ok) throw new Error("Server authentication rejected parameters.");
+
+                if (displayId === DISPLAY_ID) {
+                    location.reload(); // Quick reboot to apply settings structures clean
+                } else {
+                    window.location.search = `?displayId=${displayId}`;
+                }
+            } catch (err) {
+                errorField.textContent = err.message;
+            }
+        }
+
+        function triggerCrossFade(nextImageUrl) {
+            const activeLayer = layers[currentLayerIndex];
+            const currentActiveUrl = activeLayer.style.backgroundImage.replace(/^url\(['"]?/, '').replace(/['"]?\)$/, '');
+
+            if (currentActiveUrl === nextImageUrl) return; 
+
+            currentLayerIndex = (currentLayerIndex + 1) % 2; 
+            const nextLayer = layers[currentLayerIndex];
+            if (!activeLayer || !nextLayer) return;
+
+            const imgPreloader = new Image();
+            imgPreloader.src = nextImageUrl;
+            imgPreloader.onload = () => {
+                nextLayer.style.backgroundImage = `url('${nextImageUrl}')`;
+                nextLayer.classList.add('active');
+                activeLayer.classList.remove('active');
+            };
+        }
+
+        function loadRandomPoster() {
+            const randomPosterUrl = `${BACKEND_URL}/api/random-poster?displayId=${DISPLAY_ID}&cb=${Date.now()}`;
+            triggerCrossFade(randomPosterUrl);
+        }
+
+        async function updatePoster() {
+            try {
+                const res = await fetch(`${BACKEND_URL}/api/sessions?displayId=${DISPLAY_ID}`);
+                if (res.status === 401) {
+                    loginScreen.style.display = 'flex';
+                    posterContainer.style.display = 'none';
+                    clearInterval(pollIntervalToken);
+                    return;
+                }
+                
+                const payload = await res.json();
+                
+                // Hot sync intervals dynamically from database states
+                if (payload.intervals) {
+                    timings = payload.intervals;
+                }
+
+                const sessions = payload.sessions || [];
+                const activeSessions = sessions.filter(s => s.NowPlayingItem);
+                const strictlyPlaying = activeSessions.filter(s => !s.PlayState.IsPaused);
+
+                if (strictlyPlaying.length > 0) {
+                    if (isIdle) { isIdle = false; clearInterval(idleIntervalToken); overlayMenu.style.opacity = "1"; }
+                    statusHeading.textContent = "Active Viewers";
+                    pausedTimeTracker = 0;
+
+                    const item = strictlyPlaying[0].NowPlayingItem;
+                    const targetPosterId = item.PosterTargetId || item.Id;
+
+                    if (targetPosterId !== currentPosterId) {
+                        currentPosterId = targetPosterId;
+                        triggerCrossFade(`${BACKEND_URL}/api/poster/${targetPosterId}?displayId=${DISPLAY_ID}`);
+                    }
+                } else if (activeSessions.length > 0) {
+                    if (isIdle) { isIdle = false; clearInterval(idleIntervalToken); overlayMenu.style.opacity = "1"; }
+                    statusHeading.textContent = "Sessions Paused";
+
+                    if (activeSessionRotationIndex >= activeSessions.length) activeSessionRotationIndex = 0;
+
+                    const item = activeSessions[activeSessionRotationIndex].NowPlayingItem;
+                    const targetPosterId = item.PosterTargetId || item.Id;
+
+                    if (targetPosterId !== currentPosterId) {
+                        currentPosterId = targetPosterId;
+                        triggerCrossFade(`${BACKEND_URL}/api/poster/${targetPosterId}?displayId=${DISPLAY_ID}`);
+                    }
+
+                    // Accumulate variable timings derived purely from server file structures
+                    pausedTimeTracker += timings.poll;
+                    if (pausedTimeTracker >= timings.paused) {
+                        activeSessionRotationIndex = (activeSessionRotationIndex + 1) % activeSessions.length;
+                        pausedTimeTracker = 0;
+                    }
+                } else {
+                    currentPosterId = null;
+                    activeSessionRotationIndex = 0;
+                    pausedTimeTracker = 0;
+
+                    if (!isIdle) {
+                        isIdle = true;
+                        statusHeading.textContent = "Coming Soon"; 
+                        overlayMenu.style.opacity = "0.4"; 
+                        loadRandomPoster();
+                        // Initialize loop via configuration properties
+                        idleIntervalToken = setInterval(loadRandomPoster, timings.idle);
+                    }
+                }
+
+                // Render User Badges
+                usersList.innerHTML = '';
+                activeSessions.forEach(session => {
+                    const badge = document.createElement('div');
+                    badge.className = `user-badge ${session.PlayState.IsPaused ? 'user-paused' : ''}`;
+
+                    let avatarHtml = '';
+                    if (session.UserPrimaryImageTag) {
+                        avatarHtml = `<img class="user-avatar" src="${BACKEND_URL}/api/avatar/${session.UserId}?displayId=${DISPLAY_ID}">`;
+                    }
+
+                    const pauseIndicator = session.PlayState.IsPaused ? ' <span style="opacity:0.5; font-size: 0.8em;">(Paused)</span>' : '';
+                    badge.innerHTML = `${avatarHtml}<span class="user-name">${session.UserName}${pauseIndicator}</span>`;
+                    usersList.appendChild(badge);
+                });
+            } catch (error) {
+                console.error('Sync pipeline drop trace:', error);
+            }
+        }
+
+        function initializeDisplayEngine() {
+            loginScreen.style.display = 'none';
+            posterContainer.style.display = 'block';
+            updatePoster();
+            pollIntervalToken = setInterval(updatePoster, timings.poll);
+        }
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            document.getElementById('prof-id').value = DISPLAY_ID;
+            try {
+                const res = await fetch(`${BACKEND_URL}/api/auth/check?displayId=${DISPLAY_ID}`);
+                const state = await res.json();
+
+                if (state.authenticated) {
+                    if (state.intervals) timings = state.intervals;
+                    initializeDisplayEngine();
+                } else {
+                    loginScreen.style.display = 'flex';
+                }
+            } catch (err) {
+                loginScreen.style.display = 'flex';
+            }
+        });
+    </script>
+</body>
+</html>

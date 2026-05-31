@@ -1,0 +1,120 @@
+body { 
+    margin: 0; 
+    background-color: #000; 
+    color: #fff; 
+    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; 
+    display: flex; 
+    justify-content: center; 
+    align-items: center; 
+    height: 100vh; 
+    overflow: hidden; 
+}
+
+#poster-container {
+    position: relative; 
+    
+    /* Lock directly to the absolute top and bottom edges of the screen */
+    height: 100vh; 
+    /* Mathematically matches a 9:16 panel at 100% height */
+    width: 56.25vh; 
+    
+    /* Enforce strict aspect ratio rendering */
+    aspect-ratio: 9 / 16; 
+    
+    /* Remove rounding and shadows since it's touching the physical screen borders */
+    border-radius: 0; 
+    box-shadow: none;
+    margin: 0 auto; /* Centers the container perfectly if the browser window has any slight variance */
+    
+    background-color: #000000;
+    background-size: contain; 
+    background-repeat: no-repeat;
+    background-position: center; 
+    
+    transition: background-image 1.5s ease-in-out; 
+    overflow: hidden; 
+}
+
+.overlay { 
+    position: absolute; 
+    bottom: 0; 
+    left: 0; 
+    right: 0; 
+    background: linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.5) 70%, rgba(0,0,0,0) 100%); 
+    padding: 40px 20px 25px 20px; 
+    border-bottom-left-radius: 8px; 
+    border-bottom-right-radius: 8px; 
+    transition: opacity 0.5s ease-in-out;
+}
+
+.watching-label { 
+    font-size: 0.8rem; 
+    text-transform: uppercase; 
+    letter-spacing: 2px; 
+    color: #aaa; 
+    margin-bottom: 12px; 
+    display: block; 
+}
+
+#users-list { 
+    display: flex; 
+    flex-wrap: wrap; 
+    gap: 20px; 
+}
+
+.user-badge { 
+    display: flex; 
+    align-items: center; 
+    gap: 10px; 
+    background: rgba(255, 255, 255, 0.1); 
+    padding: 6px 14px 6px 8px; 
+    border-radius: 20px; 
+    backdrop-filter: blur(5px); 
+}
+
+.user-avatar { 
+    width: 32px; 
+    height: 32px; 
+    border-radius: 50%; 
+    object-fit: cover; 
+    border: 1px solid rgba(255, 255, 255, 0.4); 
+}
+
+.user-name { 
+    font-size: 1.1rem; 
+    font-weight: 500; 
+}
+
+/* Base setup for both artwork canvas layers */
+.poster-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-size: contain;   /* Preserves the aspect ratio of the painting */
+    background-repeat: no-repeat;
+    background-position: center center;
+    opacity: 0;                 /* Hidden by default */
+    transition: opacity 1.8s ease-in-out; /* The smooth blending speed */
+    z-index: 1;
+}
+
+/* The active class that handles the cross-fade visibility */
+.poster-layer.active {
+    opacity: 1;                 /* Fades into view when toggled */
+    z-index: 2;                 /* Brings the active layer to the front */
+}
+
+/* Force your overlay menu to sit safely on top of the cross-fading layers */
+.overlay {
+    z-index: 10;
+    position: absolute;
+}
+/* Ensure your text overlay sits firmly on top of the images */
+#plaque {
+    position: absolute;
+    bottom: 40px;
+    left: 40px;
+    z-index: 10;                /* Keeps text above the cross-fading layers */
+}

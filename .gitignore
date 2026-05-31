@@ -1,0 +1,12 @@
+# Dependency directories
+node_modules/
+
+# Local configuration database (contains private API tokens)
+config.json
+
+# Environment files
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
