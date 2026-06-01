@@ -39,6 +39,7 @@ function getDisplayProfile(req) {
 }
 
 app.use(express.static(path.join(__dirname, 'public'), {
+    index: 'index.html', // <-- Tells Express to serve art.html at "/"
     etag: true,
     lastModified: true,
     setHeaders: (res, filePath) => {
@@ -208,6 +209,73 @@ app.get('/api/random-poster', async (req, res) => {
         }
     } catch (error) {
         res.status(500).send('Carousel pipeline exception encountered');
+    }
+});
+
+// 8. PORTRAIT-SPECIFIC MUSEUM ART INTERMISSION ENDPOINT
+app.get('/api/art', async (req, res) => {
+    try {
+        // Step 1: Query for public domain paintings. 
+        // We'll grab a larger list (limit: 100) to ensure we have plenty of choices after filtering.
+        const fields = 'id,title,artist_title,image_id,dimensions';
+        const museumUrl = `https://api.artic.edu/api/v1/artworks/search?q=painting&query[term][is_public_domain]=true&fields=${fields}&limit=100`;
+
+        const response = await fetch(museumUrl);
+        if (!response.ok) throw new Error('Museum API connection failed');
+        
+        const data = await response.json();
+        const artworks = data.data || [];
+
+        // Step 2: Extract and filter out non-portrait assets in memory
+        const portraitArtworks = artworks.filter(art => {
+            // Ensure it actually has an image identifier and dimensions string
+            if (!art.image_id || !art.dimensions) return false;
+
+            try {
+                // The museum dimensions string typically looks like: "200 × 150 cm (78 3/4 × 59 in.)"
+                // We use a regular expression to find the first two numbers (Height × Width)
+                const matches = art.dimensions.match(/([0-9.,]+)\s*[×xX]\s*([0-9.,]+)/);
+                if (matches) {
+                    const height = parseFloat(matches[1].replace(/,/g, ''));
+                    const width = parseFloat(matches[2].replace(/,/g, ''));
+                    
+                    // Strictly match portrait layout (Height must be greater than Width)
+                    // You can adjust the ratio multiplier (e.g., height > width * 1.2) for narrow frames
+                    return height > width; 
+                }
+            } catch (err) {
+                // If parsing a weird dimension text format fails, skip the item safely
+                return false;
+            }
+            return false;
+        });
+
+        // Step 3: Check if our filtered stack has items, fallback if empty
+        const finalPool = portraitArtworks.length > 0 ? portraitArtworks : artworks;
+
+        // Step 4: Pick a random portrait masterpiece
+        const randomIndex = Math.floor(Math.random() * finalPool.length);
+        const selectedArt = finalPool[randomIndex];
+
+        // Step 5: Format the IIIF pipeline parameters
+        const baseConfigUrl = data.config.iiif_url;
+        const finalImageUrl = `${baseConfigUrl}/${selectedArt.image_id}/full/843,/0/default.jpg`;
+
+        res.json({
+            title: selectedArt.title || "Untitled",
+            artist: selectedArt.artist_title || "Unknown Artist",
+            imageUrl: finalImageUrl
+        });
+
+    } catch (error) {
+        console.error("Failed fetching portrait artwork metadata:", error);
+        
+        // Portrait-safe layout fallback option
+        res.json({
+            title: "Vase of Flowers",
+            artist: "Jan Davidsz de Heem",
+            imageUrl: "https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?w=1000&auto=format&fit=crop&q=80"
+        });
     }
 });
 

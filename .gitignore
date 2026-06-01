@@ -3,6 +3,8 @@ node_modules/
 
 # Local configuration database (contains private API tokens)
 config.json
+package.json
+package-lock.json
 
 # Environment files
 .env
