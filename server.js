@@ -8,10 +8,42 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 9876;
-const CONFIG_FILE = path.join(__dirname, 'config.json');
+const CONFIG_FILE = process.env.CONFIG_FILE || path.join(__dirname, 'config.json');
 
 let currentCarouselIndex = 0;
 let savedDisplays = {};
+
+// Jellyfin 12 disables legacy api_key authentication by default.
+function jellyfinAuthorization(displayId, token) {
+    const quote = value => JSON.stringify(String(value));
+    const fields = [
+        'Client="Theater Poster Display"',
+        'Device="Portrait Screen"',
+        `DeviceId=${quote(displayId)}`,
+        'Version="1.1.0"'
+    ];
+    if (token) fields.push(`Token=${quote(token)}`);
+    return `MediaBrowser ${fields.join(', ')}`;
+}
+
+async function jellyfinFetch(profile, endpoint) {
+    const response = await fetch(`${profile.serverUrl.replace(/\/+$/, '')}${endpoint}`, {
+        headers: { Authorization: jellyfinAuthorization(profile.displayId || 'default', profile.token) }
+    });
+    if (!response.ok) {
+        const error = new Error(`Jellyfin returned HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
+    }
+    return response;
+}
+
+function sendJellyfinError(res, error) {
+    const status = [401, 403, 404].includes(error.status) ? error.status : 502;
+    res.status(status).json({ error: status === 401
+        ? 'Jellyfin authentication expired. Save your server configuration again.'
+        : `Jellyfin request failed${error.status ? ` (HTTP ${error.status})` : ''}.` });
+}
 
 function loadConfigFromDisk() {
     try {
@@ -56,10 +88,10 @@ app.post('/api/auth/save-config', async (req, res) => {
             return res.status(400).json({ error: 'Missing Server URL or Username parameters.' });
         }
 
-        const authHeader = `MediaBrowser Client="Theater Poster Display", Device="Portrait Screen", DeviceId="${targetId}", Version="1.0.0"`;
+        const authHeader = jellyfinAuthorization(targetId);
         
         console.log(`Attempting connection to ${serverUrl} for user: ${username}...`);
-        const response = await fetch(`${serverUrl}/Users/AuthenticateByName`, {
+        const response = await fetch(`${serverUrl.replace(/\/+$/, '')}/Users/AuthenticateByName`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -75,7 +107,8 @@ app.post('/api/auth/save-config', async (req, res) => {
         const data = await response.json();
         
         savedDisplays[targetId] = {
-            serverUrl: serverUrl,
+            serverUrl: serverUrl.replace(/\/+$/, ''),
+            displayId: targetId,
             token: data.AccessToken,
             username: username,
             pollInterval: 5000,
@@ -118,13 +151,13 @@ app.get('/api/sessions', async (req, res) => {
     if (!profile) return res.status(401).json({ error: 'Unconfigured Display Profile' });
 
     try {
-        const response = await fetch(`${profile.serverUrl}/Sessions?api_key=${profile.token}`);
+        const response = await jellyfinFetch(profile, '/Sessions');
         let data = await response.json();
         
         if (Array.isArray(data)) {
             // Check if this display profile is explicitly set to drop paused items
             if (profile.ignorePaused === true) {
-                data = data.filter(session => session.NowPlayingItem && !session.PlayState.IsPaused);
+                data = data.filter(session => session.NowPlayingItem && !session.PlayState?.IsPaused);
             } else {
                 data.forEach(session => {
                     if (session.NowPlayingItem) {
@@ -143,7 +176,7 @@ app.get('/api/sessions', async (req, res) => {
             }
         }); 
     } catch (error) {
-        res.status(500).json({ error: 'API fetch connection down.' });
+        sendJellyfinError(res, error);
     }
 });
 
@@ -153,12 +186,12 @@ app.get('/api/poster/:itemId', async (req, res) => {
     if (!profile) return res.status(412).send('Unconfigured profile');
 
     try {
-        const imageUrl = `${profile.serverUrl}/Items/${req.params.itemId}/Images/Primary?api_key=${profile.token}&maxWidth=1000&quality=85`;
-        const response = await fetch(imageUrl);
+        const imageUrl = `/Items/${encodeURIComponent(req.params.itemId)}/Images/Primary?maxWidth=1000&quality=85`;
+        const response = await jellyfinFetch(profile, imageUrl);
         res.setHeader('Content-Type', response.headers.get('content-type'));
         res.send(Buffer.from(await response.arrayBuffer()));
     } catch (error) {
-        res.status(500).send('Error rendering asset image proxy');
+        sendJellyfinError(res, error);
     }
 });
 
@@ -168,12 +201,12 @@ app.get('/api/avatar/:userId', async (req, res) => {
     if (!profile) return res.status(412).send('Unconfigured profile');
 
     try {
-        const avatarUrl = `${profile.serverUrl}/Users/${req.params.userId}/Images/Primary?api_key=${profile.token}&maxWidth=200&quality=95`;
-        const response = await fetch(avatarUrl);
+        const avatarUrl = `/Users/${encodeURIComponent(req.params.userId)}/Images/Primary?maxWidth=200&quality=95`;
+        const response = await jellyfinFetch(profile, avatarUrl);
         res.setHeader('Content-Type', response.headers.get('content-type'));
         res.send(Buffer.from(await response.arrayBuffer()));
     } catch (error) {
-        res.status(500).send('Error rendering user icon proxy');
+        sendJellyfinError(res, error);
     }
 });
 
@@ -184,7 +217,6 @@ app.get('/api/random-poster', async (req, res) => {
 
     try {
         const params = new URLSearchParams({
-            api_key: profile.token,
             IncludeItemTypes: 'Movie',
             Recursive: 'true',
             ImageTypes: 'Primary',
@@ -193,22 +225,22 @@ app.get('/api/random-poster', async (req, res) => {
             Limit: '50'              
         });
 
-        const response = await fetch(`${profile.serverUrl}/Items?${params.toString()}`);
+        const response = await jellyfinFetch(profile, `/Items?${params.toString()}`);
         const data = await response.json();
 
         if (data.Items && data.Items.length > 0) {
             if (currentCarouselIndex >= data.Items.length) currentCarouselIndex = 0;
             const recentItem = data.Items[currentCarouselIndex++];
             
-            const imageUrl = `${profile.serverUrl}/Items/${recentItem.Id}/Images/Primary?api_key=${profile.token}&maxWidth=1000&quality=85&cb=${Date.now()}`;
-            const imageResponse = await fetch(imageUrl);
+            const imageUrl = `/Items/${encodeURIComponent(recentItem.Id)}/Images/Primary?maxWidth=1000&quality=85&cb=${Date.now()}`;
+            const imageResponse = await jellyfinFetch(profile, imageUrl);
             res.setHeader('Content-Type', imageResponse.headers.get('content-type'));
             res.send(Buffer.from(await imageResponse.arrayBuffer()));
         } else {
             res.status(404).send('No posters matched inside library indexes.');
         }
     } catch (error) {
-        res.status(500).send('Carousel pipeline exception encountered');
+        sendJellyfinError(res, error);
     }
 });
 
@@ -281,6 +313,8 @@ app.get('/api/art', async (req, res) => {
 
 loadConfigFromDisk();
 
-app.listen(PORT, () => {
+if (require.main === module) app.listen(PORT, () => {
     console.log(`[OK] Server-side saved portal configuration active on port ${PORT}`);
 });
+
+module.exports = app;
